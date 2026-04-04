@@ -2,10 +2,10 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
-# --- 1. SETTINGS & CSS (FROZEN FROM v25) ---
-st.set_page_config(layout="wide", page_title="Project Alpha v26.0", page_icon="🛡️")
+# --- 1. SETTINGS & CSS (FROZEN FROM v26) ---
+st.set_page_config(layout="wide", page_title="Project Alpha v26.1", page_icon="🛡️")
 
 st.markdown("""
     <style>
@@ -31,6 +31,11 @@ total_capital = 200000
 risk_amt = 2000 
 max_allocation = 20000
 
+# NEW: Date Toggle Dropdown
+st.sidebar.subheader("📅 Analysis Timeline")
+target_date = st.sidebar.date_input("Select Analysis Date", value=date.today(), max_value=date.today())
+st.sidebar.info(f"Viewing Market State for: {target_date}")
+
 st.sidebar.metric("Account Risk Unit", f"₹{risk_amt:,.0f}")
 st.sidebar.caption(f"Strategy: Fixed 1% Risk | Max ₹20k Exposure")
 
@@ -46,16 +51,22 @@ TICKER_MAP = {
     "Small Cap": ["IREDA.NS", "HINDCOPPER.NS", "ASTERDM.NS", "NH.NS", "POONAWALLA.NS", "SONACOMS.NS", "NAVINFLUOR.NS", "ANANDRATHI.NS", "KARURVYSYA.NS", "HIMATSEIDE.NS", "NBCC.NS", "WELCORP.NS", "LALPATHLAB.NS", "AMBER.NS", "TATATECH.NS", "ANGELONE.NS", "MANAPPURAM.NS", "AEGISLOG.NS", "WOCKPHARMA.NS", "PNBHOUSING.NS", "CESC.NS", "AFFLE.NS", "PPLPHARMA.NS", "RBLBANK.NS", "IIFL.NS", "NATCOPHARM.NS", "CITYUNIONB.NS", "CAMS.NS", "FIVESTAR.NS", "INOXWIND.NS", "KEC.NS", "KFINTECH.NS", "PGELECTRO.NS", "REDINGTON.NS", "RPOWER.NS", "SUVENPHAR.NS", "ZENSARTECH.NS", "IRFC.NS", "HUDCO.NS", "PCJEWELLER.NS", "COCHINSHIP.NS", "GRSE.NS", "GOKEX.NS", "SWANENERGY.NS", "TEJASNET.NS", "HFCL.NS", "ITI.NS", "RAILTEL.NS", "GPIL.NS", "TIRUMALCHM.NS", "KOPRAN.NS", "MOREPENLAB.NS", "MARKSANS.NS", "SMSPHARMA.NS", "AARTIDRUGS.NS", "GRANULES.NS", "ERIS.NS", "PFIZER.NS", "JBCHEPHARM.NS", "SANWS.NS", "HINDWARE.NS", "CERA.NS", "KAJARIACER.NS", "SOMANYCERA.NS", "SUNTECK.NS", "PURVA.NS", "MAHLIFE.NS", "BRIGADE.NS", "SOBHA.NS", "EASEMYTRIP.NS", "BLS.NS", "THOMASCOOK.NS", "VIPIND.NS", "SYMPHONY.NS", "EUREKAFORBE.NS", "ORIENTBELL.NS", "BORORENEW.NS", "GENUSPOWER.NS", "HPL.NS", "BOROSIL.NS", "LAOPALA.NS", "KIRLFERROS.NS", "THANGAMAYL.NS", "INOXINDIA.NS", "JWL.NS", "TITAGARH.NS", "SIGNATURE.NS", "HAPPYFORG.NS", "KIRLOSENG.NS", "RAMRAT.NS"]
 }
 
-# --- 4. DATA & NARRATIVE ENGINE (POINT 2: MTF INCLUDED) ---
+# --- 4. ENGINE (MODIFIED FOR HISTORICAL ANALYSIS) ---
 @st.cache_data(ttl=600)
-def fetch_bulk_clean_v26(tickers, mode):
-    p_map = {"Day Trading": "5d", "Swing Trading": "2mo", "Positional": "1y", "Investors": "3y"}
+def fetch_bulk_clean_v26(tickers, mode, analysis_date):
+    # Fetch extra history to ensure indicators (EMA200) work on historical dates
+    p_map = {"Day Trading": "1mo", "Swing Trading": "6mo", "Positional": "2y", "Investors": "5y"}
     i_map = {"Day Trading": "5m", "Swing Trading": "1h", "Positional": "1d", "Investors": "1wk"}
     return yf.download(tickers, period=p_map[mode], interval=i_map[mode], group_by='ticker', auto_adjust=True, progress=False)
 
-def analyze_v26(df, risk_val, alloc_val, mult):
+def analyze_v26(df, risk_val, alloc_val, mult, analysis_date):
     try:
+        # POINT 1: Slice data to chosen target date
+        dt_str = analysis_date.strftime('%Y-%m-%d')
+        df = df[df.index <= dt_str]
+        
         if df.empty or len(df) < 25: return None
+        
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['EMA20'] = ta.ema(df['Close'], length=20)
         df['EMA200'] = ta.ema(df['Close'], length=200)
@@ -64,36 +75,32 @@ def analyze_v26(df, risk_val, alloc_val, mult):
         lp, rsi, prsi = float(df['Close'].iloc[-1]), df['RSI'].iloc[-1], df['RSI'].iloc[-2]
         atr = df['ATR'].iloc[-1]
         
-        # Risk Math
         sl = round(lp - (mult * atr), 2)
         qty = min(int(risk_val / (lp - sl)), int(alloc_val / lp)) if lp > sl else 0
         gc = df['EMA20'].iloc[-1] > df['EMA200'].iloc[-1] if not df['EMA200'].isnull().all() else False
         state = "BUY" if rsi > 55 else "WAIT" if rsi > prsi else "NEUTRAL" if 45 <= rsi <= 55 else "SELL"
         
-        # POINT 2: MTF Score Logic (Agreement between EMA and RSI)
-        mtf_score = 60 # Base
+        mtf_score = 60 
         if lp > df['EMA20'].iloc[-1]: mtf_score += 20
         if rsi > 55: mtf_score += 20
         
         gc_note = "🌟 Structural Floor: Golden Cross active." if gc else "🌑 Structural Weakness: No GC support."
-        
         pov = f"**ANALYSIS:** {state} trigger based on RSI {rsi:.1f}. Price is {'holding' if lp > df['EMA20'].iloc[-1] else 'failing'} at the 20-EMA. **MTF Confluence: {mtf_score}%**. {gc_note}"
         
         return {"price": lp, "conf": mtf_score, "state": state, "sl": sl, "qty": qty, "gc": gc, "pov": pov}
     except: return None
 
-# --- 5. DASHBOARD RENDERER ---
-# POINT 1: SEGMENT MOMENTUM CALCULATION
+# --- 5. RENDERER ---
 m_indices = {"Nifty 50": "^NSEI", "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT"}
-m_cols = st.columns(4) # Added 4th Column
+m_cols = st.columns(4) 
 for i, (name, ticker) in enumerate(m_indices.items()):
     try:
+        # History check also adjusted for weekend gap
         d = yf.Ticker(ticker).history(period="5d")
         chg = ((d['Close'].iloc[-1] - d['Close'].iloc[-2]) / d['Close'].iloc[-2]) * 100
         m_cols[i].metric(name, f"{d['Close'].iloc[-1]:,.0f}", f"{chg:.2f}%")
     except: pass
 
-# Segment Header Metric
 m_cols[3].metric("Segment Momentum", f"{cap_choice}", "Analyzing...")
 
 st.divider()
@@ -103,8 +110,8 @@ tabs = st.tabs(["Day Trading", "Swing Trading", "Positional", "Investors"])
 
 for tab_idx, mode in enumerate(["Day Trading", "Swing Trading", "Positional", "Investors"]):
     with tabs[tab_idx]:
-        with st.spinner(f"Updating {mode} Engine..."):
-            bulk_data = fetch_bulk_clean_v26(current_list, mode)
+        with st.spinner(f"Simulating {mode} for {target_date}..."):
+            bulk_data = fetch_bulk_clean_v26(current_list, mode, target_date)
         
         h = st.columns([1.2, 0.6, 1, 1, 1.2, 1.8, 4.5, 1.5])
         h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**"); h[3].write("**State**")
@@ -115,7 +122,7 @@ for tab_idx, mode in enumerate(["Day Trading", "Swing Trading", "Positional", "I
         for i, symbol in enumerate(current_list):
             try:
                 ticker_df = bulk_data[symbol] if len(current_list) > 1 else bulk_data
-                data = analyze_v26(ticker_df, risk_amt, max_allocation, sl_mult)
+                data = analyze_v26(ticker_df, risk_amt, max_allocation, sl_mult, target_date)
             except: data = None
             
             if data:
@@ -144,6 +151,5 @@ for tab_idx, mode in enumerate(["Day Trading", "Swing Trading", "Positional", "I
                 st.session_state[f"v26_{mode}_{i}"] = res
                 st.divider()
         
-        # Update Segment Momentum card
         momentum_pct = (buy_count / len(current_list)) * 100 if current_list else 0
-        st.toast(f"Sector Breadth: {momentum_pct:.1f}% of {cap_choice} is Bullish.")
+        st.toast(f"Sector Breadth for {target_date}: {momentum_pct:.1f}% Bullish.")
