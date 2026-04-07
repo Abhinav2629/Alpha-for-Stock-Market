@@ -4,13 +4,41 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
+import sqlite3 # Persistent Storage Engine
 from datetime import datetime, date, timedelta
 
 # --- SYSTEM ANCHOR ---
 sys.modules['warnings'] = warnings 
 
+# --- 0. STORAGE ENGINE (NEW: DATABASE INITIALIZATION) ---
+def init_db():
+    conn = sqlite3.connect('alpha_vault.db')
+    c = conn.cursor()
+    # Table to store daily signals and user actions
+    c.execute('''CREATE TABLE IF NOT EXISTS signals 
+                 (date TEXT, symbol TEXT, mode TEXT, price REAL, state TEXT, mtf INTEGER, pov TEXT, position TEXT, 
+                 PRIMARY KEY (date, symbol, mode))''')
+    conn.commit()
+    conn.close()
+
+def save_signal(date_str, symbol, mode, price, state, mtf, pov, position):
+    conn = sqlite3.connect('alpha_vault.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO signals (date, symbol, mode, price, state, mtf, pov, position) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (date_str, symbol, mode, price, state, mtf, pov, position))
+    conn.commit()
+    conn.close()
+
+def load_saved_data(date_str, mode):
+    conn = sqlite3.connect('alpha_vault.db')
+    df = pd.read_sql_query(f"SELECT * FROM signals WHERE date='{date_str}' AND mode='{mode}'", conn)
+    conn.close()
+    return df
+
+init_db()
+
 # --- 1. SETTINGS & CSS (FROZEN) ---
-st.set_page_config(layout="wide", page_title="Project Alpha v31.0", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Project Alpha v32.0", page_icon="🛡️")
 
 st.markdown("""
     <style>
@@ -26,7 +54,6 @@ st.markdown("""
     .stock-name, .state-signal { font-size: 14px; font-weight: bold; }
     .stInfo { padding: 12px !important; font-size: 13px !important; line-height: 1.5 !important; border-left: 5px solid #2e9aff !important; }
     
-    /* Mobile sideways scroll fix */
     @media (max-width: 768px) {
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
@@ -39,13 +66,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SIDEBAR: THE PORTFOLIO & LAYOUT CENTER ---
+# --- 2. SIDEBAR: THE PORTFOLIO & LAYOUT CENTER (FROZEN) ---
 st.sidebar.title("🛡️ Alpha Command")
 total_capital, risk_amt, max_allocation = 200000, 2000, 20000
 
-# Date Toggle
 st.sidebar.subheader("📅 Analysis Timeline")
 target_date = st.sidebar.date_input("Analysis Date", value=date.today())
+date_str = target_date.strftime('%Y-%m-%d')
 
 st.sidebar.subheader("⚙️ Portfolio Filters")
 cap_choice = st.sidebar.selectbox("Market Segment", ["Large Cap", "Mid Cap", "Small Cap"])
@@ -53,9 +80,7 @@ search_q = st.sidebar.text_input("🔍 Search Terminal", "").upper()
 sl_mult = st.sidebar.slider("Volatility Buffer (SL Multiplier)", 1.0, 3.0, 1.5)
 only_buys = st.sidebar.toggle("🔥 Show Actionable Alpha Only", value=False)
 
-# POINT: LAYOUT FREEDOM SLIDERS
 with st.sidebar.expander("📐 Terminal Layout Control"):
-    st.caption("Adjust the relative width of each column")
     w_stock = st.slider("Stock Name", 0.5, 3.0, 1.2)
     w_chart = st.slider("Chart Link", 0.3, 1.5, 0.6)
     w_price = st.slider("Price", 0.5, 2.0, 1.0)
@@ -75,24 +100,6 @@ TICKER_MAP = {
 }
 
 # --- 4. ENGINE (FROZEN) ---
-def generate_elaborated_note(df, state, gc, rsi, lp, ema20):
-    gc_status = "🌟 Golden Cross Confirmed: Long-term floor active." if gc else "🌑 No Structural Floor: Long-term resistance."
-    if state == "BUY":
-        note = f"**BULLISH IGNITION:** Asset in 'High Velocity' discovery. Above 20-EMA. RSI: {rsi:.1f}. {gc_status}"
-    elif state == "WAIT":
-        note = f"**RECOVERY ALERT:** RSI ({rsi:.1f}) curling from oversold. Monitoring close above EMA20 for 1:3 R/R setup. {gc_status}"
-    elif state == "NEUTRAL":
-        note = f"**EQUILIBRIUM:** Price hugging EMA20. Low commitment. RSI ({rsi:.1f}). Wait for expansion. {gc_status}"
-    else:
-        note = f"**BEARISH DOMINANCE:** Structural compromise. Downside liquidity hunting likely. RSI: {rsi:.1f}. {gc_status}"
-    return note
-
-@st.cache_data(ttl=600)
-def fetch_alpha_data_v31(tickers, mode, analysis_date):
-    p_map = {"Day Trading": "1mo", "Swing Trading": "6mo", "Positional": "2y", "Investors": "5y"}
-    i_map = {"Day Trading": "5m", "Swing Trading": "1h", "Positional": "1d", "Investors": "1wk"}
-    return yf.download(tickers, period=p_map[mode], interval=i_map[mode], group_by='ticker', auto_adjust=True, progress=False)
-
 def analyze_v31(df, risk_val, alloc_val, mult, analysis_date):
     try:
         df = df[df.index <= analysis_date.strftime('%Y-%m-%d')]
@@ -115,43 +122,61 @@ for i, (name, ticker) in enumerate(m_indices.items()):
         d = yf.Ticker(ticker).history(period="5d")
         m_cols[i].metric(name, f"{d['Close'].iloc[-1]:,.0f}", f"{((d['Close'].iloc[-1]-d['Close'].iloc[-2])/d['Close'].iloc[-2])*100:.2f}%")
     except: pass
-m_cols[3].metric("Segment Momentum", f"{cap_choice}", "Scanning...")
+m_cols[3].metric("Archive Engine", "ONLINE", "Synced")
 
 st.divider()
 
 current_list = [t for t in TICKER_MAP[cap_choice] if search_q in t]
-tabs = st.tabs(["Day Trading", "Swing Trading", "Positional", "Investors"])
+tabs = st.tabs(["Terminal", "📜 Trading Journal"])
 
-for tab_idx, mode in enumerate(["Day Trading", "Swing Trading", "Positional", "Investors"]):
-    with tabs[tab_idx]:
-        bulk_data = fetch_alpha_data_v31(current_list, mode, target_date)
-        
-        # USE DYNAMIC WIDTHS FOR HEADER
-        h = st.columns(col_widths)
-        h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**"); h[3].write("**State**")
-        h[4].write("**Strength**"); h[5].write("**Smart Stake**"); h[6].write("**Professional Analyst POV**"); h[7].write("**Action**")
-        st.divider()
+# TAB 1: ACTIVE TERMINAL
+with tabs[0]:
+    bulk_data = fetch_alpha_data_v31(current_list, "Swing Trading", target_date)
+    h = st.columns(col_widths)
+    h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**"); h[3].write("**State**")
+    h[4].write("**Strength**"); h[5].write("**Smart Stake**"); h[6].write("**Professional Analyst POV**"); h[7].write("**Action**")
+    st.divider()
 
-        buy_count = 0
-        for i, symbol in enumerate(current_list):
-            data = analyze_v31(bulk_data[symbol] if len(current_list) > 1 else bulk_data, risk_amt, max_allocation, sl_mult, target_date)
-            if data:
-                if data['state'] == "BUY": buy_count += 1
-                status = st.session_state.get(f"v31_{mode}_{i}", "-")
-                if status == "Bought": sig, col = ("HOLD", "blue") if data['mtf'] > 45 else ("CLOSE", "red")
-                else: sig = data['state']; col = "cyan" if sig == "WAIT" else "gray" if sig == "NEUTRAL" else "green" if sig == "BUY" else "red"
-                if only_buys and sig not in ["BUY", "WAIT", "HOLD"]: continue
-                
-                # USE DYNAMIC WIDTHS FOR DATA ROWS
-                c = st.columns(col_widths)
-                c[0].markdown(f"<span class='stock-name'>{symbol.replace('.NS','')}</span>", unsafe_allow_html=True)
-                c[1].link_button("📊", f"https://www.tradingview.com/chart/?symbol=NSE:{symbol.replace('.NS','')}")
-                c[2].write(f"₹{data['price']:,.2f}")
-                c[3].markdown(f"<span class='state-signal' style='color:{col}'>{sig}</span>", unsafe_allow_html=True)
-                c[4].progress(int(data['mtf']))
-                with c[5]: 
-                    st.caption(f"Exit: ₹{data['sl']}"); st.write(f"**Qty: {data['qty']}**"); st.caption(f"Risk: ₹{risk_amt}")
-                c[6].info(data['pov'])
-                res = c[7].selectbox("Position", ["-", "Bought", "Sold"], key=f"sel31_{mode}_{i}")
-                st.session_state[f"v31_{mode}_{i}"] = res
-                st.divider()
+    # Load previously saved decisions for this date/mode
+    saved_archive = load_saved_data(date_str, "Swing Trading")
+
+    for i, symbol in enumerate(current_list):
+        data = analyze_v31(bulk_data[symbol] if len(current_list) > 1 else bulk_data, risk_amt, max_allocation, sl_mult, target_date)
+        if data:
+            # Check if we have a saved position in the Journal for this stock on this day
+            match = saved_archive[saved_archive['symbol'] == symbol]
+            default_pos = match['position'].values[0] if not match.empty else "-"
+            
+            status = st.session_state.get(f"v31_{date_str}_{symbol}", default_pos)
+            
+            if status == "Bought": sig, col = ("HOLD", "blue") if data['mtf'] > 45 else ("CLOSE", "red")
+            else: sig = data['state']; col = "cyan" if sig == "WAIT" else "gray" if sig == "NEUTRAL" else "green" if sig == "BUY" else "red"
+            if only_buys and sig not in ["BUY", "WAIT", "HOLD"]: continue
+            
+            c = st.columns(col_widths)
+            c[0].markdown(f"<span class='stock-name'>{symbol.replace('.NS','')}</span>", unsafe_allow_html=True)
+            c[1].link_button("📊", f"https://www.tradingview.com/chart/?symbol=NSE:{symbol.replace('.NS','')}")
+            c[2].write(f"₹{data['price']:,.2f}")
+            c[3].markdown(f"<span class='state-signal' style='color:{col}'>{sig}</span>", unsafe_allow_html=True)
+            c[4].progress(int(data['mtf']))
+            with c[5]: 
+                st.caption(f"Exit: ₹{data['sl']}"); st.write(f"**Qty: {data['qty']}**"); st.caption(f"Risk: ₹{risk_amt}")
+            
+            c[6].info(data['pov'])
+            
+            # Action Dropdown - Saving is triggered on change
+            res = c[7].selectbox("Position", ["-", "Bought", "Sold"], key=f"sel31_{date_str}_{symbol}", index=["-", "Bought", "Sold"].index(status))
+            if res != status:
+                save_signal(date_str, symbol, "Swing Trading", data['price'], sig, data['mtf'], data['pov'], res)
+                st.session_state[f"v31_{date_str}_{symbol}"] = res
+                st.rerun()
+            st.divider()
+
+# TAB 2: TRADING JOURNAL (VIEW SAVED DATA)
+with tabs[1]:
+    st.subheader(f"Archive for {date_str}")
+    archive_df = load_saved_data(date_str, "Swing Trading")
+    if archive_df.empty:
+        st.write("No positions logged for this date yet.")
+    else:
+        st.dataframe(archive_df, use_container_width=True)
