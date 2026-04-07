@@ -10,92 +10,101 @@ from datetime import datetime, date, timedelta
 # --- SYSTEM ANCHOR ---
 sys.modules['warnings'] = warnings 
 
-# --- 0. STORAGE ENGINE (SQLITE ARCHIVE) ---
+# --- 0. PERSISTENCE ENGINE (NEW ADDITION) ---
 def init_db():
     conn = sqlite3.connect('alpha_vault.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS signals 
-                 (date TEXT, symbol TEXT, mode TEXT, price REAL, state TEXT, mtf INTEGER, pov TEXT, position TEXT, 
-                 PRIMARY KEY (date, symbol, mode))''')
+    # Stores the specific position/action you took for a specific stock on a specific date
+    c.execute('''CREATE TABLE IF NOT EXISTS journal 
+                 (date TEXT, symbol TEXT, position TEXT, PRIMARY KEY (date, symbol))''')
     conn.commit()
     conn.close()
 
-def save_signal(date_str, symbol, mode, price, state, mtf, pov, position):
+def save_position(date_str, symbol, position):
     conn = sqlite3.connect('alpha_vault.db')
     c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO signals (date, symbol, mode, price, state, mtf, pov, position) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (date_str, symbol, mode, price, state, mtf, pov, position))
+    c.execute("INSERT OR REPLACE INTO journal (date, symbol, position) VALUES (?, ?, ?)", 
+              (date_str, symbol, position))
     conn.commit()
     conn.close()
 
-def load_saved_data(date_str, mode):
-    try:
-        conn = sqlite3.connect('alpha_vault.db')
-        df = pd.read_sql_query(f"SELECT * FROM signals WHERE date='{date_str}' AND mode='{mode}'", conn)
-        conn.close()
-        return df
-    except:
-        return pd.DataFrame()
+def load_position(date_str, symbol):
+    conn = sqlite3.connect('alpha_vault.db')
+    c = conn.cursor()
+    c.execute("SELECT position FROM journal WHERE date=? AND symbol=?", (date_str, symbol))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "-"
 
 init_db()
 
-# --- 1. SETTINGS & CSS ---
-st.set_page_config(layout="wide", page_title="Project Alpha v32.1", page_icon="🛡️")
+# --- 1. SETTINGS & CSS (FROZEN FROM v31.0) ---
+st.set_page_config(layout="wide", page_title="Project Alpha v32.0", page_icon="🛡️")
 
 st.markdown("""
     <style>
     [data-testid="stVerticalBlock"] > div { padding-top: 0.05rem; padding-bottom: 0.05rem; }
     hr { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
-    [data-testid="stMetric"] { background-color: #262730 !important; padding: 15px !important; border-radius: 12px !important; border: 1px solid #41444C !important; }
+    [data-testid="stMetric"] {
+        background-color: #262730 !important;
+        padding: 15px !important;
+        border-radius: 12px !important;
+        border: 1px solid #41444C !important;
+    }
     [data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.8rem !important; font-weight: 700 !important; }
-
+    .stock-name, .state-signal { font-size: 14px; font-weight: bold; }
+    .stInfo { padding: 12px !important; font-size: 13px !important; line-height: 1.5 !important; border-left: 5px solid #2e9aff !important; }
+    
     @media (max-width: 768px) {
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
-            flex-wrap: nowrap !important;
             overflow-x: auto !important;
             white-space: nowrap !important;
-            padding-bottom: 15px !important;
         }
-        div[data-testid="column"] { flex: 0 0 auto !important; width: auto !important; min-width: 100px !important; margin-right: 15px !important; }
+        div[data-testid="column"] { min-width: 150px !important; flex: 0 0 auto !important; }
     }
-    .stock-name, .state-signal { font-size: 14px; font-weight: bold; white-space: nowrap !important; }
-    .stInfo { padding: 12px !important; font-size: 13px !important; line-height: 1.5 !important; border-left: 5px solid #2e9aff !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SIDEBAR COMMAND ---
+# --- 2. SIDEBAR (FROZEN FROM v31.0) ---
 st.sidebar.title("🛡️ Alpha Command")
 total_capital, risk_amt, max_allocation = 200000, 2000, 20000
 
+st.sidebar.subheader("📅 Analysis Timeline")
 target_date = st.sidebar.date_input("Analysis Date", value=date.today())
 date_str = target_date.strftime('%Y-%m-%d')
 
+st.sidebar.subheader("⚙️ Portfolio Filters")
 cap_choice = st.sidebar.selectbox("Market Segment", ["Large Cap", "Mid Cap", "Small Cap"])
 search_q = st.sidebar.text_input("🔍 Search Terminal", "").upper()
 sl_mult = st.sidebar.slider("Volatility Buffer (SL Multiplier)", 1.0, 3.0, 1.5)
 only_buys = st.sidebar.toggle("🔥 Show Actionable Alpha Only", value=False)
 
-with st.sidebar.expander("📐 Layout Control"):
+# UPDATED: Added 2 sliders for the 2 new columns within the frozen layout
+with st.sidebar.expander("📐 Terminal Layout Control"):
+    st.caption("Adjust column widths")
     w_stock = st.slider("Stock Name", 0.5, 3.0, 1.2)
     w_chart = st.slider("Chart Link", 0.3, 1.5, 0.6)
-    w_price = st.slider("Price/52W", 0.5, 3.0, 2.5) # Grouped
-    w_state = st.slider("State/MTF", 0.5, 3.0, 2.0) # Grouped
+    w_price = st.slider("Price", 0.5, 2.0, 1.0)
+    w_hi52 = st.slider("52W High", 0.5, 2.0, 1.0) # New
+    w_lo52 = st.slider("52W Low", 0.5, 2.0, 1.0)  # New
+    w_state = st.slider("State Signal", 0.5, 2.0, 1.0)
+    w_strength = st.slider("Strength Bar", 0.5, 2.5, 1.2)
     w_stake = st.slider("Smart Stake", 1.0, 3.0, 1.8)
     w_pov = st.slider("Analyst POV", 2.0, 10.0, 4.5)
     w_action = st.slider("Action Dropdown", 0.5, 2.5, 1.5)
 
-col_widths = [w_stock, w_chart, w_price, w_state, w_stake, w_pov, w_action]
+col_widths = [w_stock, w_chart, w_price, w_hi52, w_lo52, w_state, w_strength, w_stake, w_pov, w_action]
 
-# --- 3. REPOSITORY ---
+# --- 3. REPOSITORY (FROZEN) ---
 TICKER_MAP = {
     "Large Cap": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS", "SBIN.NS", "INFY.NS", "LICI.NS", "ITC.NS", "HUL.NS", "LT.NS", "BAJFINANCE.NS", "AXISBANK.NS", "KOTAKBANK.NS", "SUNPHARMA.NS", "ADANIENT.NS", "TATAMOTORS.NS", "MARUTI.NS", "NTPC.NS", "TITAN.NS", "ONGC.NS", "ADANIPORTS.NS", "POWERGRID.NS", "ASIANPAINT.NS", "HCLTECH.NS", "COALINDIA.NS", "TATASTEEL.NS", "BAJAJFINSV.NS", "ULTRACEMCO.NS", "M&M.NS", "JSWSTEEL.NS", "GRASIM.NS", "NESTLEIND.NS", "WIPRO.NS", "LTIM.NS", "HINDALCO.NS", "SBILIFE.NS", "BAJAJ-AUTO.NS", "ADANIGREEN.NS", "BEL.NS", "TATAELXSI.NS", "TRENT.NS", "VBL.NS", "SHRIRAMFIN.NS", "TATACONSUM.NS", "CIPLA.NS", "DRREDDY.NS", "BPCL.NS", "EICHERMOT.NS", "BRITANNIA.NS", "GAIL.NS", "INDIGO.NS", "HAL.NS", "ADANIPOWER.NS", "DLF.NS", "IOC.NS", "JINDALSTEL.NS", "CHOLAFIN.NS", "SIEMENS.NS", "TATACOMM.NS", "ABB.NS", "AMBUJACEM.NS", "BANKBARODA.NS", "BERGEPAINT.NS", "CANBK.NS", "COLPAL.NS", "DABUR.NS", "DIVISLAB.NS", "EXIDEIND.NS", "FEDERALBNK.NS", "GLAND.NS", "GODREJCP.NS", "HAVELLS.NS", "HEROMOTOCO.NS", "HINDZINC.NS", "ICICIPRULI.NS", "IDFCFIRSTB.NS", "INDUSINDBK.NS", "IRCTC.NS", "JSWENERGY.NS", "JUBLFOOD.NS", "LUPIN.NS", "MARICO.NS", "MCDOWELL-N.NS", "MUTHOOTFIN.NS", "NMDC.NS", "OBEROIRLTY.NS", "PIDILITIND.NS", "PNB.NS", "RECLTD.NS", "MOTHERSON.NS", "SHREECEM.NS", "SRF.NS", "TATACHEM.NS", "TATAPOWER.NS", "TVSMOTOR.NS", "UPL.NS", "VEDL.NS", "YESBANK.NS", "ZOMATO.NS", "JIOFIN.NS"],
-    "Mid Cap": ["BSE.NS", "INDUSTOWER.NS", "POLYCAB.NS", "GMRINFRA.NS", "ASHOKLEY.NS", "BHEL.NS", "MAXHEALTH.NS", "PERSISTENT.NS", "MANKIND.NS", "BHARATFORG.NS", "OIL.NS", "AUROPHARMA.NS", "SWIGGY.NS", "NHPC.NS", "NYKAA.NS", "HPCL.NS", "POLICYBZR.NS", "AUBANK.NS", "NAUKRI.NS", "PAYTM.NS", "ALKEM.NS", "MCX.NS", "SBICCARD.NS", "DIXON.NS", "FORTIS.NS", "LAURUSLABS.NS", "PHOENIXLTD.NS", "APLAPOLLO.NS", "MAXFSL.NS", "TIINDIA.NS", "PRESTIGE.NS", "SUPREMEIND.NS", "GODREJPROP.NS", "MPHASIS.NS", "COFORGE.NS", "VOLTAS.NS", "CONCOR.NS", "CUMMINSIND.NS", "ESCORTS.NS", "GUJGASLTD.NS", "IDBI.NS", "IGL.NS", "INDIANB.NS", "IPCALAB.NS", "JKCEMENT.NS", "LICHSGFIN.NS", "LTTS.NS", "MRF.NS", "OFSS.NS", "PAGEIND.NS", "PETRONET.NS", "PFC.NS", "RAMCOCEM.NS", "RVNL.NS", "SYNGENE.NS", "UNIONBANK.NS", "WHIRLPOOL.NS", "ZEEL.NS", "ABFRL.NS", "ACC.NS", "AJANTPHARM.NS", "APOLLOTYRE.NS", "BALKRISIND.NS", "BANDHANBNK.NS", "BATAINDIA.NS", "BEL.NS", "BIOCON.NS", "COROMANDEL.NS", "CROMPTON.NS", "DEEPAKNTR.NS", "DELHIVERY.NS", "GLENMARK.NS", "IEX.NS", "INDHOTEL.NS", "L&TFH.NS", "ASTRAL.NS", "KEI.NS", "KPITTECH.NS", "MAZDOCK.NS", "SJVN.NS", "SUNTV.NS", "UNOMINDA.NS", "MANYAVAR.NS", "PATANJALI.NS", "MRPL.NS", "ARCHEAN.NS", "KAYNES.NS", "GODREJIND.NS", "CENTURYPLY.NS", "METROPOLIS.NS", "TATACOMM.NS", "UPL.NS"],
+    "Mid Cap": ["BSE.NS", "INDUSTOWER.NS", "POLYCAB.NS", "GMRINFRA.NS", "ASHOKLEY.NS", "BHEL.NS", "MAXHEALTH.NS", "PERSISTENT.NS", "MANKIND.NS", "BHARATFORG.NS", "OIL.NS", "AUROPHARMA.NS", "SWIGGY.NS", "NHPC.NS", "NYKAA.NS", "HPCL.NS", "POLICYBZR.NS", "AUBANK.NS", "NAUKRI.NS", "PAYTM.NS", "ALKEM.NS", "MCX.NS", "SBICARD.NS", "DIXON.NS", "FORTIS.NS", "LAURUSLABS.NS", "PHOENIXLTD.NS", "APLAPOLLO.NS", "MAXFSL.NS", "TIINDIA.NS", "PRESTIGE.NS", "SUPREMEIND.NS", "GODREJPROP.NS", "MPHASIS.NS", "COFORGE.NS", "VOLTAS.NS", "CONCOR.NS", "CUMMINSIND.NS", "ESCORTS.NS", "GUJGASLTD.NS", "IDBI.NS", "IGL.NS", "INDIANB.NS", "IPCALAB.NS", "JKCEMENT.NS", "LICHSGFIN.NS", "LTTS.NS", "MRF.NS", "OFSS.NS", "PAGEIND.NS", "PETRONET.NS", "PFC.NS", "RAMCOCEM.NS", "RVNL.NS", "SYNGENE.NS", "UNIONBANK.NS", "WHIRLPOOL.NS", "ZEEL.NS", "ABFRL.NS", "ACC.NS", "AJANTPHARM.NS", "APOLLOTYRE.NS", "BALKRISIND.NS", "BANDHANBNK.NS", "BATAINDIA.NS", "BEL.NS", "BIOCON.NS", "COROMANDEL.NS", "CROMPTON.NS", "DEEPAKNTR.NS", "DELHIVERY.NS", "GLENMARK.NS", "IEX.NS", "INDHOTEL.NS", "L&TFH.NS", "ASTRAL.NS", "KEI.NS", "KPITTECH.NS", "MAZDOCK.NS", "SJVN.NS", "SUNTV.NS", "UNOMINDA.NS", "MANYAVAR.NS", "PATANJALI.NS", "MRPL.NS", "ARCHEAN.NS", "KAYNES.NS", "GODREJIND.NS", "CENTURYPLY.NS", "METROPOLIS.NS", "TATACOMM.NS", "UPL.NS"],
     "Small Cap": ["IREDA.NS", "HINDCOPPER.NS", "ASTERDM.NS", "NH.NS", "POONAWALLA.NS", "SONACOMS.NS", "NAVINFLUOR.NS", "ANANDRATHI.NS", "KARURVYSYA.NS", "HIMATSEIDE.NS", "NBCC.NS", "WELCORP.NS", "LALPATHLAB.NS", "AMBER.NS", "TATATECH.NS", "ANGELONE.NS", "MANAPPURAM.NS", "AEGISLOG.NS", "WOCKPHARMA.NS", "PNBHOUSING.NS", "CESC.NS", "AFFLE.NS", "PPLPHARMA.NS", "RBLBANK.NS", "IIFL.NS", "NATCOPHARM.NS", "CITYUNIONB.NS", "CAMS.NS", "FIVESTAR.NS", "INOXWIND.NS", "KEC.NS", "KFINTECH.NS", "PGELECTRO.NS", "REDINGTON.NS", "RPOWER.NS", "SUVENPHAR.NS", "ZENSARTECH.NS", "IRFC.NS", "HUDCO.NS", "PCJEWELLER.NS", "COCHINSHIP.NS", "GRSE.NS", "GOKEX.NS", "SWANENERGY.NS", "TEJASNET.NS", "HFCL.NS", "ITI.NS", "RAILTEL.NS", "GPIL.NS", "TIRUMALCHM.NS", "KOPRAN.NS", "MOREPENLAB.NS", "MARKSANS.NS", "SMSPHARMA.NS", "AARTIDRUGS.NS", "GRANULES.NS", "ERIS.NS", "PFIZER.NS", "JBCHEPHARM.NS", "SANWS.NS", "HINDWARE.NS", "CERA.NS", "KAJARIACER.NS", "SOMANYCERA.NS", "SUNTECK.NS", "PURVA.NS", "MAHLIFE.NS", "BRIGADE.NS", "SOBHA.NS", "EASEMYTRIP.NS", "BLS.NS", "THOMASCOOK.NS", "VIPIND.NS", "SYMPHONY.NS", "EUREKAFORBE.NS", "ORIENTBELL.NS", "BORORENEW.NS", "GENUSPOWER.NS", "HPL.NS", "BOROSIL.NS", "LAOPALA.NS", "KIRLFERROS.NS", "THANGAMAYL.NS", "INOXINDIA.NS", "JWL.NS", "TITAGARH.NS", "SIGNATURE.NS", "HAPPYFORG.NS", "KIRLOSENG.NS", "RAMRAT.NS"]
 }
 
-# --- 4. ENGINE ---
+# --- 4. ENGINE (FROZEN FROM v31.0) ---
 def generate_elaborated_note(df, state, gc, rsi, lp, ema20):
     gc_status = "🌟 Golden Cross Confirmed: Long-term floor active." if gc else "🌑 No Structural Floor: Long-term resistance."
     if state == "BUY":
@@ -118,7 +127,7 @@ def analyze_v32(df, risk_val, alloc_val, mult, analysis_date):
     try:
         df = df[df.index <= analysis_date.strftime('%Y-%m-%d')]
         if df.empty or len(df) < 25: return None
-        # 52W Stats
+        # NEW: 52W Calculation within engine
         hi_52, lo_52 = float(df.last('365D')['High'].max()), float(df.last('365D')['Low'].min())
         
         df['RSI'], df['EMA20'], df['EMA200'], df['ATR'] = ta.rsi(df['Close'], length=14), ta.ema(df['Close'], length=20), ta.ema(df['Close'], length=200), ta.atr(df['High'], df['Low'], df['Close'], length=14)
@@ -131,75 +140,67 @@ def analyze_v32(df, risk_val, alloc_val, mult, analysis_date):
         return {"price": lp, "hi52": hi_52, "lo52": lo_52, "mtf": mtf, "state": state, "sl": sl, "qty": qty, "pov": generate_elaborated_note(df, state, gc, rsi, lp, ema20)}
     except: return None
 
-# --- 5. RENDERER ---
+# --- 5. RENDERER (FROZEN STRUCTURE) ---
 m_indices = {"Nifty 50": "^NSEI", "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT"}
 m_cols = st.columns(4) 
-for i, (n, t) in enumerate(m_indices.items()):
+for i, (name, ticker) in enumerate(m_indices.items()):
     try:
-        d = yf.Ticker(t).history(period="5d")
-        m_cols[i].metric(n, f"{d['Close'].iloc[-1]:,.0f}", f"{((d['Close'].iloc[-1]-d['Close'].iloc[-2])/d['Close'].iloc[-2])*100:.2f}%")
+        d = yf.Ticker(ticker).history(period="5d")
+        m_cols[i].metric(name, f"{d['Close'].iloc[-1]:,.0f}", f"{((d['Close'].iloc[-1]-d['Close'].iloc[-2])/d['Close'].iloc[-2])*100:.2f}%")
     except: pass
-m_cols[3].metric("Archive Engine", "ONLINE", "Synced")
+m_cols[3].metric("Journal Engine", "ONLINE", "Persistent")
 
 st.divider()
 
 current_list = [t for t in TICKER_MAP[cap_choice] if search_q in t]
-tabs = st.tabs(["Active Terminal", "📜 Trading Journal"])
+tabs = st.tabs(["Active Terminal", "📜 Archive View"])
 
 with tabs[0]:
-    with st.spinner(f"Loading {date_str}..."):
-        bulk_data = fetch_alpha_data_v32(current_list, "Swing Trading", target_date)
+    bulk_data = fetch_alpha_data_v32(current_list, "Swing Trading", target_date)
     
+    # FROZEN HEADER: Restored columns to be separate and independent
     h = st.columns(col_widths)
-    h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price Engine (CP/52W)**")
-    h[3].write("**State (Signal/MTF)**"); h[4].write("**Smart Stake**"); h[5].write("**Professional Analyst POV**"); h[6].write("**Action**")
+    h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**")
+    h[3].write("**52W High**"); h[4].write("**52W Low**") # New additions in sequence
+    h[5].write("**State**"); h[6].write("**Strength**"); h[7].write("**Smart Stake**")
+    h[8].write("**Analyst POV**"); h[9].write("**Action**")
     st.divider()
-
-    saved_archive = load_saved_data(date_str, "Swing Trading")
 
     for i, symbol in enumerate(current_list):
         data = analyze_v32(bulk_data[symbol] if len(current_list) > 1 else bulk_data, risk_amt, max_allocation, sl_mult, target_date)
         if data:
-            match = saved_archive[saved_archive['symbol'] == symbol]
-            default_pos = match['position'].values[0] if not match.empty else "-"
+            # Persistent State Logic: Load saved position from DB
+            saved_pos = load_position(date_str, symbol)
             
-            # State Management
-            status = st.session_state.get(f"v32_{date_str}_{symbol}", default_pos)
-            
-            if status == "Bought": sig, col = ("HOLD", "blue") if data['mtf'] > 45 else ("CLOSE", "red")
+            if saved_pos == "Bought": sig, col = ("HOLD", "blue") if data['mtf'] > 45 else ("CLOSE", "red")
             else: sig = data['state']; col = "cyan" if sig == "WAIT" else "gray" if sig == "NEUTRAL" else "green" if sig == "BUY" else "red"
             if only_buys and sig not in ["BUY", "WAIT", "HOLD"]: continue
             
+            # FROZEN ROW: Restored original spacing and column order
             c = st.columns(col_widths)
             c[0].markdown(f"<span class='stock-name'>{symbol.replace('.NS','')}</span>", unsafe_allow_html=True)
             c[1].link_button("📊", f"https://www.tradingview.com/chart/?symbol=NSE:{symbol.replace('.NS','')}")
-            
-            # Grouped Column 3: CP and 52W Range
-            with c[2]:
-                st.write(f"**CP: ₹{data['price']:,.1f}**")
-                st.caption(f"H: {data['hi52']:,.0f} | L: {data['lo52']:,.0f}")
-            
-            # Grouped Column 4: Signal and MTF
-            with c[3]:
-                st.markdown(f"<span class='state-signal' style='color:{col}'>{sig}</span>", unsafe_allow_html=True)
-                st.progress(int(data['mtf']))
-            
-            with c[4]: 
+            c[2].write(f"₹{data['price']:,.1f}")
+            c[3].write(f"₹{data['hi52']:,.1f}")
+            c[4].write(f"₹{data['lo52']:,.1f}")
+            c[5].markdown(f"<span class='state-signal' style='color:{col}'>{sig}</span>", unsafe_allow_html=True)
+            c[6].progress(int(data['mtf']))
+            with c[7]: 
                 st.caption(f"Exit: ₹{data['sl']}"); st.write(f"**Qty: {data['qty']}**"); st.caption(f"Risk: ₹{risk_amt}")
+            c[8].info(data['pov'])
             
-            c[5].info(data['pov'])
-            
-            res = c[6].selectbox("Position", ["-", "Bought", "Sold"], key=f"sel32_{date_str}_{symbol}", index=["-", "Bought", "Sold"].index(status))
-            if res != status:
-                save_signal(date_str, symbol, "Swing Trading", data['price'], sig, data['mtf'], data['pov'], res)
-                st.session_state[f"v32_{date_str}_{symbol}"] = res
+            # Action logic: Auto-saves to database on change
+            res = c[9].selectbox("Position", ["-", "Bought", "Sold"], key=f"sel32_{date_str}_{symbol}", index=["-", "Bought", "Sold"].index(saved_pos))
+            if res != saved_pos:
+                save_position(date_str, symbol, res)
                 st.rerun()
             st.divider()
 
 with tabs[1]:
-    st.subheader(f"Archive Log for {date_str}")
-    archive_df = load_saved_data(date_str, "Swing Trading")
-    if archive_df.empty:
-        st.write("No positions logged for this date.")
-    else:
-        st.dataframe(archive_df, use_container_width=True)
+    st.subheader(f"Saved Positions for {date_str}")
+    # Load and show everything saved for this date
+    conn = sqlite3.connect('alpha_vault.db')
+    archive_df = pd.read_sql_query(f"SELECT symbol, position FROM journal WHERE date='{date_str}'", conn)
+    conn.close()
+    if archive_df.empty: st.write("No entries logged for this date.")
+    else: st.table(archive_df)
