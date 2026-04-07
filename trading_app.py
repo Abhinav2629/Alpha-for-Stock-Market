@@ -4,7 +4,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import gspread # Google Sheets Bridge
+import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date, timedelta
 
@@ -12,41 +12,33 @@ from datetime import datetime, date, timedelta
 sys.modules['warnings'] = warnings 
 
 # --- 0. GOOGLE DRIVE PERSISTENCE ENGINE ---
-def connect_to_drive():
+def get_gspread_client():
     try:
-        # Note: You must add your credentials to st.secrets or a local file
+        # Authentication using Streamlit Secrets for Cloud Security
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
-        client = gspread.authorize(creds)
-        return client.open("Project_Alpha_Archive")
-    except Exception as e:
+        return gspread.authorize(creds)
+    except:
         return None
 
-def save_daily_swing_data(date_str, df_results):
-    sheet = connect_to_drive()
-    if sheet:
+def save_to_drive(date_str, data_list):
+    client = get_gspread_client()
+    if client:
         try:
-            # Check if worksheet for the date exists, else create it
-            try:
-                worksheet = sheet.add_worksheet(title=date_str, rows="100", cols="20")
-            except:
-                worksheet = sheet.worksheet(date_str)
+            # Open or create the Archive Spreadsheet
+            try: sheet = client.open("Project_Alpha_Archive")
+            except: sheet = client.create("Project_Alpha_Archive")
             
-            # Clear and update with new data
+            # Create or get worksheet for specific date
+            try: worksheet = sheet.add_worksheet(title=date_str, rows="100", cols="20")
+            except: worksheet = sheet.worksheet(date_str)
+            
+            df = pd.DataFrame(data_list)
             worksheet.clear()
-            worksheet.update([df_results.columns.values.tolist()] + df_results.values.tolist())
-        except:
-            pass
-
-def load_historical_swing_data(date_str):
-    sheet = connect_to_drive()
-    if sheet:
-        try:
-            worksheet = sheet.worksheet(date_str)
-            return pd.DataFrame(worksheet.get_all_records())
-        except:
-            return None
-    return None
+            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+            return True
+        except: return False
+    return False
 
 # --- 1. SETTINGS & CSS (FROZEN FROM v28.1) ---
 st.set_page_config(layout="wide", page_title="Project Alpha v32.0", page_icon="🛡️")
@@ -68,12 +60,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SIDEBAR COMMAND CENTER ---
+# --- 2. SIDEBAR COMMAND CENTER (FROZEN) ---
 st.sidebar.title("🛡️ Alpha Command")
 total_capital, risk_amt, max_allocation = 200000, 2000, 20000
 
 st.sidebar.subheader("📅 Archive Timeline")
-# Updated: Date Dropdown for toggling history
 target_date = st.sidebar.date_input("Analysis Date", value=date.today(), max_value=date.today())
 date_str = target_date.strftime('%Y-%m-%d')
 
@@ -92,99 +83,69 @@ TICKER_MAP = {
 
 # --- 4. ENGINE (FROZEN NARRATIVE) ---
 def generate_elaborated_note(state, gc, rsi):
-    gc_status = "🌟 Golden Cross Confirmed: Long-term floor active." if gc else "🌑 No Structural Floor."
+    gc_status = "🌟 Golden Cross Confirmed: Floor active." if gc else "🌑 No Structural Floor."
     notes = {
-        "BUY": f"**BULLISH IGNITION:** Trading firmly above 20-EMA with RSI ({rsi:.1f}) in Power Zone. {gc_status}",
-        "WAIT": f"**RECOVERY ALERT:** RSI ({rsi:.1f}) curling up from oversold. Monitoring close above EMA20. {gc_status}",
-        "NEUTRAL": f"**EQUILIBRIUM:** Price hugging 20-EMA mean. RSI ({rsi:.1f}) indicates sideways chop. {gc_status}",
-        "SELL": f"**BEARISH DOMINANCE:** Asset structurally compromised. Below major trendlines. {gc_status}"
+        "BUY": f"**BULLISH IGNITION:** Above 20-EMA. RSI ({rsi:.1f}) in Power Zone. {gc_status}",
+        "WAIT": f"**RECOVERY ALERT:** RSI ({rsi:.1f}) curling from oversold. Monitoring close above EMA20. {gc_status}",
+        "NEUTRAL": f"**EQUILIBRIUM:** Price hugging EMA20. RSI ({rsi:.1f}) in chop. {gc_status}",
+        "SELL": f"**BEARISH DOMINANCE:** Asset structurally compromised. Below major lines. {gc_status}"
     }
     return notes.get(state, "Scanning...")
 
 @st.cache_data(ttl=600)
-def fetch_alpha_data_v28(tickers, target_date):
-    # Always fetch extra padding to ensure EMA200 works even for historical dates
+def fetch_alpha_data_archive(tickers):
     return yf.download(tickers, period="2y", interval="1d", group_by='ticker', auto_adjust=True, progress=False)
 
 def analyze_swing(df, risk_val, alloc_val, mult, target_date):
     try:
-        # Slice data to the selected historical date
         df = df[df.index <= pd.Timestamp(target_date)]
         if df.empty or len(df) < 200: return None
-        
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        df['EMA20'] = ta.ema(df['Close'], length=20)
-        df['EMA200'] = ta.ema(df['Close'], length=200)
-        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        
-        lp, rsi = float(df['Close'].iloc[-1]), df['RSI'].iloc[-1]
-        atr, ema20, ema200 = df['ATR'].iloc[-1], df['EMA20'].iloc[-1], df['EMA200'].iloc[-1]
-        
-        sl = round(lp - (mult * atr), 2)
+        df['RSI'], df['EMA20'], df['EMA200'], df['ATR'] = ta.rsi(df['Close'], length=14), ta.ema(df['Close'], length=20), ta.ema(df['Close'], length=200), ta.atr(df['High'], df['Low'], df['Close'], length=14)
+        lp, rsi, ema20 = float(df['Close'].iloc[-1]), df['RSI'].iloc[-1], df['EMA20'].iloc[-1]
+        sl = round(lp - (mult * df['ATR'].iloc[-1]), 2)
         qty = min(int(risk_val / (lp - sl)), int(alloc_val / lp)) if lp > sl else 0
-        gc = ema20 > ema200
+        gc = ema20 > df['EMA200'].iloc[-1]
         state = "BUY" if rsi > 55 else "WAIT" if rsi > df['RSI'].iloc[-2] else "NEUTRAL" if 45 <= rsi <= 55 else "SELL"
-        
-        mtf = 60 + (20 if lp > ema20 else 0) + (20 if rsi > 55 else 0)
-        pov = generate_elaborated_note(state, gc, rsi)
-        
-        return {"symbol": "", "price": lp, "mtf": mtf, "state": state, "sl": sl, "qty": qty, "pov": pov}
+        return {"symbol": "", "price": lp, "mtf": 60 + (20 if lp > ema20 else 0) + (20 if rsi > 55 else 0), "state": state, "sl": sl, "qty": qty, "pov": generate_elaborated_note(state, gc, rsi)}
     except: return None
 
-# --- 5. RENDERER (SWING TRADING ONLY ARCHIVE) ---
-m_indices = {"Nifty 50": "^NSEI", "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT"}
-m_cols = st.columns(4) 
-for i, (name, ticker) in enumerate(m_indices.items()):
-    try:
-        d = yf.Ticker(ticker).history(period="5d")
-        m_cols[i].metric(name, f"{d['Close'].iloc[-1]:,.0f}", f"{((d['Close'].iloc[-1]-d['Close'].iloc[-2])/d['Close'].iloc[-2])*100:.2f}%")
-    except: pass
-m_cols[3].metric("Archive Status", "CONNECTED", date_str)
-
+# --- 5. RENDERER ---
+st.columns(3)[0].metric("Archive Engine", "CONNECTED", date_str)
 st.divider()
 
 current_list = [t for t in TICKER_MAP[cap_choice] if search_q in t]
-tabs = st.tabs(["Active Terminal", "📜 Archive View"])
+with st.spinner(f"Simulating Swing State for {date_str}..."):
+    bulk_data = fetch_alpha_data_archive(current_list)
 
-with tabs[0]: # ACTIVE TAB
-    with st.spinner(f"Simulating Swing State for {date_str}..."):
-        bulk_data = fetch_alpha_data_v28(current_list, target_date)
-    
-    h = st.columns([1.2, 0.6, 1, 1, 1.2, 1.8, 4.5, 1.5])
-    h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**"); h[3].write("**State**")
-    h[4].write("**Strength**"); h[5].write("**Smart Stake**"); h[6].write("**Analyst POV**"); h[7].write("**Action**")
-    st.divider()
+h = st.columns([1.2, 0.6, 1, 1, 1.2, 1.8, 4.5, 1.5])
+h[0].write("**Stock**"); h[1].write("**Chart**"); h[2].write("**Price**"); h[3].write("**State**")
+h[4].write("**Strength**"); h[5].write("**Smart Stake**"); h[6].write("**Professional POV**"); h[7].write("**Action**")
+st.divider()
 
-    daily_results = []
-    for i, symbol in enumerate(current_list):
-        data = analyze_swing(bulk_data[symbol] if len(current_list)>1 else bulk_data, risk_amt, max_allocation, sl_mult, target_date)
-        if data:
-            data["symbol"] = symbol
-            daily_results.append(data)
-            
-            # Filter logic
-            if only_buys and data['state'] not in ["BUY", "WAIT"]: continue
+current_swing_data = []
+for i, symbol in enumerate(current_list):
+    data = analyze_swing(bulk_data[symbol] if len(current_list)>1 else bulk_data, risk_amt, max_allocation, sl_mult, target_date)
+    if data:
+        if only_buys and data['state'] not in ["BUY", "WAIT"]: continue
 
-            c = st.columns([1.2, 0.6, 1, 1, 1.2, 1.8, 4.5, 1.5])
-            c[0].markdown(f"<span class='stock-name'>{symbol.replace('.NS','')}</span>", unsafe_allow_html=True)
-            c[1].link_button("📊", f"https://www.tradingview.com/chart/?symbol=NSE:{symbol.replace('.NS','')}")
-            c[2].write(f"₹{data['price']:,.2f}")
-            c[3].write(data['state'])
-            c[4].progress(int(data['mtf']))
-            with c[5]: st.write(f"**Qty: {data['qty']}**"); st.caption(f"Risk: ₹{risk_amt}")
-            c[6].info(data['pov'])
-            res = c[7].selectbox("Position", ["-", "Bought", "Sold"], key=f"s_{date_str}_{symbol}")
-    
-    # Auto-save button for daily persistence
-    if st.button("🚀 Push to Drive Archive"):
-        res_df = pd.DataFrame(daily_results)
-        save_daily_swing_data(date_str, res_df)
-        st.success(f"Archived {len(res_df)} stocks for {date_str} to your Drive.")
+        c = st.columns([1.2, 0.6, 1, 1, 1.2, 1.8, 4.5, 1.5])
+        c[0].markdown(f"<span class='stock-name'>{symbol.replace('.NS','')}</span>", unsafe_allow_html=True)
+        c[1].link_button("📊", f"https://www.tradingview.com/chart/?symbol=NSE:{symbol.replace('.NS','')}")
+        c[2].write(f"₹{data['price']:,.2f}"); c[3].write(data['state']); c[4].progress(int(data['mtf']))
+        with c[5]: st.write(f"**Qty: {data['qty']}**"); st.caption(f"Risk: ₹{risk_amt}")
+        c[6].info(data['pov'])
+        
+        # User Choice (Saved only when Push button is clicked)
+        res = c[7].selectbox("Position", ["-", "Bought", "Sold"], key=f"s_{date_str}_{symbol}")
+        
+        # Collect for Archive
+        data["symbol"] = symbol
+        data["position"] = res
+        current_swing_data.append(data)
 
-with tabs[1]: # ARCHIVE VIEW TAB
-    st.subheader(f"Historical Lookup: {date_str}")
-    hist_df = load_historical_swing_data(date_str)
-    if hist_df is not None:
-        st.dataframe(hist_df, use_container_width=True)
+st.divider()
+if st.button("🚀 Commit Today's Swing Signals to Google Drive"):
+    if save_to_drive(date_str, current_swing_data):
+        st.success(f"Archive Secured for {date_str}!")
     else:
-        st.warning("No archived data found for this date. Run the 'Push to Drive' on the Active tab first.")
+        st.error("Connection failed. Did you share the sheet with the service email?")
